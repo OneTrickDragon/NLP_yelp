@@ -395,8 +395,158 @@ else:
     print("Loading dataset and creating vectorizer")
     # create dataset and vectorizer
     dataset = ReviewDataset.load_dataset_and_make_vectorizer(args.review_csv)
-    dataset.save_vectorizer(args.vectorizer_file)    
+    dataset.save_vectorizer(args.vectorizer_file)   
+
 vectorizer = dataset.get_vectorizer()
 
 classifier = ReviewClassifier(num_features=len(vectorizer.review_vocab))
 
+classifier = classifier.to(args.device)
+
+loss_func = nn.BCEWithLogitsLoss()
+optimizer = optim.Adam(classifier.parameters(), lr=args.learning_rate)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
+                                                 mode='min', factor=0.5,
+                                                 patience=1)
+
+train_state = make_train_state(args)
+
+epoch_bar = tqdm_notebook(desc='training routine', 
+                          total=args.num_epochs,
+                          position=0)
+
+dataset.set_split('train')
+train_bar = tqdm_notebook(desc='split=train',
+                          total=dataset.get_num_batches(args.batch_size), 
+                          position=1,
+                          leave=True)
+
+dataset.set_split('val')
+val_bar = tqdm_notebook(desc='split=val',
+                        total=dataset.get_num_batches(args.batch_size), 
+                        position=1, 
+                        leave=True)
+
+try:
+    for epoch_index in range(args.num_epochs):
+        train_state['epoch_index'] = epoch_index
+
+        dataset.set_split('train')
+        batch_generator = generate_batches(dataset, batch_size=args.batch_size, device=args.device)
+
+        running_loss = 0.0
+        running_acc = 0.0
+        classifier.train()
+
+        for batch_index, batch_dict in enumerate(batch_generator):
+            optimizer.zero_grad()
+
+            y_pred = classifier(x_in= batch_dict['x_data'].float())
+
+            loss = loss_func(y_pred, batch_dict['y_data'].float())
+            loss_t = loss.item()
+            running_loss += (loss_t - running_loss)/(batch_index + 1)
+
+            loss.backward()
+
+            optimizer.step()
+            acc_t = compute_accuracy(y_pred, batch_dict['y_target'])
+            running_acc += (acc_t - running_acc)/(batch_index + 1)
+
+            train_bar.set_postfix(loss=running_loss, 
+                                  acc=running_acc, 
+                                  epoch=epoch_index)
+            train_bar.update()        
+
+        train_state['train_loss'].append(running_loss)
+        train_state['train_acc'].append(running_acc)
+
+        dataset.set_split('val')
+        batch_generator = generate_batches(dataset, batch_size=args.batch_size, device=args.device)
+        running_loss = 0.
+        running_acc = 0.
+        classifier.eval()
+
+        for batch_index, batch_dict in enumerate(batch_generator):
+
+            y_pred = classifier(x_in=batch_dict['x_data'].float())
+
+            loss = loss_func(y_pred, batch_dict['y_target'].float())
+            loss_t = loss.items()
+            running_loss += (loss_t - running_loss)/(batch_index + 1)
+
+            acc_t = compute_accuracy(y_pred, batch_dict['y_target'])
+            running_acc += (acc_t - running_acc)/(batch_index + 1)
+
+            val_bar.set_postfix(loss=running_loss,
+                                acc=running_acc,
+                                epoch=epoch_index)
+            val_bar.update()
+        
+        train_state['val_loss'].append(running_loss)
+        train_state['val_acc'].append(running_acc)
+
+        train_state = update_train_state(args = args, model= classifier, train_state=train_state)
+
+        scheduler.step(train_state['val_loss'][-1])
+
+        train_bar.n = 0
+        val_bar.n = 0
+        epoch_bar.update()
+except KeyboardInterrupt:
+    print('Exiting loop')
+
+classifier.load_state_dict(torch.load(train_state['model_filename']))
+classifier = classifier.to(args.device)
+
+dataset.set_split('test')
+batch_generator = generate_batches(dataset, 
+                                   batch_size=args.batch_size, 
+                                   device=args.device)
+running_loss = 0.
+running_acc = 0.
+classifier.eval()
+
+for batch_index, batch_dict in enumerate(batch_generator):
+    # compute the output
+    y_pred = classifier(x_in=batch_dict['x_data'].float())
+
+    # compute the loss
+    loss = loss_func(y_pred, batch_dict['y_target'].float())
+    loss_t = loss.item()
+    running_loss += (loss_t - running_loss) / (batch_index + 1)
+
+    # compute the accuracy
+    acc_t = compute_accuracy(y_pred, batch_dict['y_target'])
+    running_acc += (acc_t - running_acc) / (batch_index + 1)
+
+train_state['test_loss'] = running_loss
+train_state['test_acc'] = running_acc
+
+print("Test loss: {:.3f}".format(train_state['test_loss']))
+print("Test Accuracy: {:.2f}".format(train_state['test_acc']))
+
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r"([.,!?])", r" \1 ", text)
+    text = re.sub(r"[^a-zA-Z.,!?]+", r" ", text)
+    return text
+
+fc1_weights = classifier.fc1.weight.detach()[0]
+_, indices = torch.sort(fc1_weights, dim=0, descending=True)
+indices = indices.numpy().tolist()
+
+# Top 20 words
+print("Influential words in Positive Reviews:")
+print("--------------------------------------")
+for i in range(20):
+    print(vectorizer.review_vocab.lookup_index(indices[i]))
+    
+print("====\n\n\n")
+
+# Top 20 negative words
+print("Influential words in Negative Reviews:")
+print("--------------------------------------")
+indices.reverse()
+for i in range(20):
+    print(vectorizer.review_vocab.lookup_index(indices[i]))
