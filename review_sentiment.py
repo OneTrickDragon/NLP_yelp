@@ -275,3 +275,128 @@ class ReviewClassifier(nn.Module):
             y_out = torch.sigmoid(y_out)
         return y_out
 
+def make_train_state(args):
+    return {'stop_early': False,
+            'early_stopping_step': 0,
+            'early_stopping_best_val': 1e8,
+            'learning_rate': args.learning_rate,
+            'epoch_index': 0,
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'test_loss': -1,
+            'test_acc': -1,
+            'model_filename': args.model_state_file}
+
+def update_train_state(args, model, train_state):
+    """Handle the training state updates.
+
+    Components:
+     - Early Stopping: Prevent overfitting.
+     - Model Checkpoint: Model is saved if the model is better
+
+    :param args: main arguments
+    :param model: model to train
+    :param train_state: a dictionary representing the training state values
+    :returns:
+        a new train_state
+    """
+
+    if train_state['epoch_index'] == 0:
+        torch.save(model.state_dict(), train_state['model_filename'])
+        train_state['stop_early'] = False
+
+    elif train_state['epoch_index'] >= 1:
+        loss_tm1, loss_t = train_state['val_loss'][-2:]
+
+        if loss_t >= train_state['early_stopping_best_val']:
+            train_state['early_stopping_step'] += 1
+  
+        else:
+            if loss_t < train_state['early_stopping_best_val']:
+                torch.save(model.state_dict(), train_state['model_filename'])
+    
+            train_state['early_stopping_step'] = 0
+
+        train_state['stop_early'] = \
+            train_state['early_stopping_step'] >= args.early_stopping_criteria
+
+    return train_state
+
+def compute_accuracy(y_pred, y_target):
+    y_target = y_target.cpu()
+    y_pred_indices = (torch.sigmoid(y_pred)>0.5).cpu().long()
+    n_correct = torch.eq(y_pred_indices, y_target).sum().item()
+    return n_correct / len(y_pred_indices) * 100
+
+def set_seed_everywhere(seed, cuda):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if cuda:
+        torch.cuda.manual_seed_all(seed)
+
+def handle_dirs(dirpath):
+    if not os.path.exists(dirpath):
+        os.makedirs(dirpath)
+
+args = Namespace(
+    # Data and Path information
+    frequency_cutoff=25,
+    model_state_file='model.pth',
+    review_csv='yelp/reviews_full.csv',
+    save_dir='model_storage/ch3/yelp/',
+    vectorizer_file='vectorizer.json',
+    # No Model hyper parameters
+    # Training hyper parameters
+    batch_size=128,
+    early_stopping_criteria=5,
+    learning_rate=0.001,
+    num_epochs=100,
+    seed=9248,
+    # Runtime options
+    catch_keyboard_interrupt=True,
+    cuda=True,
+    expand_filepaths_to_save_dir=True,
+    reload_from_files=False,
+)
+
+if args.expand_filepaths_to_save_dir:
+    args.vectorizer_file = os.path.join(args.save_dir,
+                                        args.vectorizer_file)
+
+    args.model_state_file = os.path.join(args.save_dir,
+                                         args.model_state_file)
+    
+    print("Expanded filepaths: ")
+    print("\t{}".format(args.vectorizer_file))
+    print("\t{}".format(args.model_state_file))
+    
+# Check CUDA
+if not torch.cuda.is_available():
+    args.cuda = False
+
+print("Using CUDA: {}".format(args.cuda))
+
+args.device = torch.device("cuda" if args.cuda else "cpu")
+
+# Set seed for reproducibility
+set_seed_everywhere(args.seed, args.cuda)
+
+# handle dirs
+handle_dirs(args.save_dir)
+
+if args.reload_from_files:
+    # training from a checkpoint
+    print("Loading dataset and vectorizer")
+    dataset = ReviewDataset.load_dataset_and_load_vectorizer(args.review_csv,
+                                                            args.vectorizer_file)
+else:
+    print("Loading dataset and creating vectorizer")
+    # create dataset and vectorizer
+    dataset = ReviewDataset.load_dataset_and_make_vectorizer(args.review_csv)
+    dataset.save_vectorizer(args.vectorizer_file)    
+vectorizer = dataset.get_vectorizer()
+
+classifier = ReviewClassifier(num_features=len(vectorizer.review_vocab))
+
