@@ -262,3 +262,16 @@ def generate_batches(dataset, batch_size, shuffle=True, drop_last=True, device='
         for name, tensor in data_dict.items():
             out_data_dict[name] = data_dict[name].to(device)
         yield out_data_dict
+
+class ReviewClassifier(nn.Module):
+    def __init__(self, num_features):
+        super(ReviewClassifier, self).__init__()
+        self.fc1 = nn.Linear(in_features=num_features,
+                             out_features= 1)
+        
+    def forward(self, x_in, apply_sigmoid=False):
+        y_out = self.fc1(x_in).squeeze()
+        if apply_sigmoid:
+            y_out = torch.sigmoid(y_out)
+        return y_out
+
