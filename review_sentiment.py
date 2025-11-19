@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm_notebook
+from tqdm.notebook import tqdm
 
 class Vocabulary(object):
     """Class to process text and extract vocabulary for mapping"""
@@ -35,7 +35,7 @@ class Vocabulary(object):
 
         self.unk_index = -1
         if add_unk:
-            self.unk_token = self.add_token(unk_token)
+            self.unk_index = self.add_token(unk_token)
     
     def to_serializable(self):
         """Returns a serializable dictionary"""
@@ -120,7 +120,7 @@ class ReviewVectorizer(object):
         Returns:
             one_hot (np.nd array): the collapsed one hot encoding
         """
-        one_hot = np.zeroes(len(self.review_vocab), dtype = np.float32)
+        one_hot = np.zeros(len(self.review_vocab), dtype = np.float32)
 
         for token in review.split(" "):
             if token not in string.punctuation:
@@ -184,13 +184,13 @@ class ReviewDataset(Dataset):
         self.review_df = review_df
         self._vectorizer = vectorizer
         
-        self.train_df = self.review_df[self.review_df.split == 'train']
+        self.train_df = self.review_df[self.review_df['split'] == 'train']
         self.train_size = len(self.train_df)
 
-        self.val_df = self.review_df[self.review_df.split == 'val']
+        self.val_df = self.review_df[self.review_df['split'] == 'val']
         self.val_size = len(self.val_df)
 
-        self.test_df = self.review_df[self.review_df.split == ' test']
+        self.test_df = self.review_df[self.review_df['split'] == 'test']
         self.test_size = len(self.test_df)
 
         self._lookup_dict = {'train': (self.train_df, self.train_size),
@@ -344,7 +344,7 @@ args = Namespace(
     # Data and Path information
     frequency_cutoff=25,
     model_state_file='model.pth',
-    review_csv='yelp/reviews_full.csv',
+    review_csv='yelp/reviews_with_splits_lite.csv',
     save_dir='model_storage/ch3/yelp/',
     vectorizer_file='vectorizer.json',
     # No Model hyper parameters
@@ -394,7 +394,7 @@ if args.reload_from_files:
 else:
     print("Loading dataset and creating vectorizer")
     # create dataset and vectorizer
-    dataset = ReviewDataset.load_dataset_and_make_vectorizer(args.review_csv)
+    dataset = ReviewDataset.load_dataset_make_vectorizer(args.review_csv)
     dataset.save_vectorizer(args.vectorizer_file)   
 
 vectorizer = dataset.get_vectorizer()
@@ -411,18 +411,18 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
 
 train_state = make_train_state(args)
 
-epoch_bar = tqdm_notebook(desc='training routine', 
+epoch_bar = tqdm(desc='training routine', 
                           total=args.num_epochs,
                           position=0)
 
 dataset.set_split('train')
-train_bar = tqdm_notebook(desc='split=train',
+train_bar = tqdm(desc='split=train',
                           total=dataset.get_num_batches(args.batch_size), 
                           position=1,
                           leave=True)
 
 dataset.set_split('val')
-val_bar = tqdm_notebook(desc='split=val',
+val_bar = tqdm(desc='split=val',
                         total=dataset.get_num_batches(args.batch_size), 
                         position=1, 
                         leave=True)
@@ -443,7 +443,7 @@ try:
 
             y_pred = classifier(x_in= batch_dict['x_data'].float())
 
-            loss = loss_func(y_pred, batch_dict['y_data'].float())
+            loss = loss_func(y_pred, batch_dict['y_target'].float())
             loss_t = loss.item()
             running_loss += (loss_t - running_loss)/(batch_index + 1)
 
@@ -472,7 +472,7 @@ try:
             y_pred = classifier(x_in=batch_dict['x_data'].float())
 
             loss = loss_func(y_pred, batch_dict['y_target'].float())
-            loss_t = loss.items()
+            loss_t = loss.item()
             running_loss += (loss_t - running_loss)/(batch_index + 1)
 
             acc_t = compute_accuracy(y_pred, batch_dict['y_target'])
